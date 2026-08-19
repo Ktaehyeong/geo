@@ -76,9 +76,12 @@ def lookup_domain(domain, mapping, field):
         return candidates.iloc[0][field]
     return "기타"
 
-def analyze_answer(question_row, answer_text, ai_model, mapping):
+def analyze_answer(question_row, answer_text, citation_text, ai_model, mapping):
     rows = []
-    for url in extract_urls(answer_text):
+    # Prefer manually supplied citation URLs. If none are supplied,
+    # fall back to URLs that happen to exist in the copied AI answer.
+    urls = extract_urls(citation_text) if str(citation_text).strip() else extract_urls(answer_text)
+    for url in urls:
         domain = get_domain(url)
         rows.append({
             "question_id": question_row["id"],
@@ -110,7 +113,7 @@ if "current_idx" not in st.session_state:
     st.session_state.current_idx = 0
 
 st.title("AI Citation Analyzer")
-st.caption("AI 답변을 붙여넣으면 Citation URL을 추출·정제하고, 출처/브랜드 단위의 분석 데이터로 변환합니다.")
+st.caption("AI 답변과 Citation URL을 입력하면 링크를 정제하고, 출처/브랜드 단위의 분석 데이터로 변환합니다.")
 
 with st.sidebar:
     st.header("1. 분석 설정")
@@ -190,17 +193,26 @@ with right:
     st.subheader("3. AI 답변")
     answer = st.text_area(
         "AI의 답변 전체를 그대로 붙여넣으세요.",
-        height=360,
+        height=300,
         placeholder="여기에 ChatGPT / Gemini / Claude 등의 답변을 붙여넣으세요...",
         key=f"answer_{q['id']}_{idx}",
     )
+
+    citation_text = st.text_area(
+        "Citation URL",
+        height=150,
+        placeholder="인용 링크를 한 줄에 하나씩 붙여넣으세요. 여러 개를 한 번에 붙여넣어도 됩니다.\n예: https://www.booking.com/...\nhttps://www.tripadvisor.com/...",
+        key=f"citations_{q['id']}_{idx}",
+        help="ChatGPT 답변 복사 시 Citation 링크가 빠질 수 있어 별도 입력칸을 추가했습니다."
+    )
+
     if st.button("Citation 분석 및 저장", type="primary", use_container_width=True):
-        if not answer.strip():
-            st.warning("AI 답변을 먼저 붙여넣어 주세요.")
+        if not answer.strip() and not citation_text.strip():
+            st.warning("AI 답변 또는 Citation URL을 입력해 주세요.")
         else:
-            result = analyze_answer(q, answer, ai_model, brand_map)
+            result = analyze_answer(q, answer, citation_text, ai_model, brand_map)
             if result.empty:
-                st.warning("답변에서 http/https URL을 찾지 못했습니다.")
+                st.warning("http/https 형식의 Citation URL을 찾지 못했습니다.")
             else:
                 # 같은 질문+모델의 기존 결과는 교체하여 중복 누적 방지
                 old = st.session_state.results
