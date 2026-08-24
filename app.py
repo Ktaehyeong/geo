@@ -31,6 +31,8 @@ DEFAULT_BRAND_MAP = [
     ["agoda.com", "Agoda", "OTA"],
     ["expedia.com", "Expedia", "OTA"],
     ["tripadvisor.com", "Tripadvisor", "OTA/리뷰플랫폼"],
+    ["tripstore.kr", "트립스토어", "OTA"],
+    ["yomo.co.kr", "요모", "OTA"],
     ["klook.com", "Klook", "OTA"],
     ["kkday.com", "KKday", "OTA"],
     ["japan.travel", "JNTO", "관광청/공공기관"],
