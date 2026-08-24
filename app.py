@@ -27,6 +27,7 @@ DEFAULT_BRAND_MAP = [
     ["nol.yanolja.com", "야놀자", "OTA"],
     ["yeogi.com", "여기어때", "OTA"],
     ["booking.com", "Booking.com", "OTA"],
+    ["myrealtrip.com", "마이리얼트립", "OTA"],
     ["agoda.com", "Agoda", "OTA"],
     ["expedia.com", "Expedia", "OTA"],
     ["tripadvisor.com", "Tripadvisor", "OTA/리뷰플랫폼"],
