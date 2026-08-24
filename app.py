@@ -370,6 +370,7 @@ def rich_paste_box(key):
         },
         default={"payload": payload},
         key=key,
+        on_payload_change=lambda: None,
     )
 
     # 현재 렌더 결과에서도 읽어보기
