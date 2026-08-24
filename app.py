@@ -37,24 +37,38 @@ DEFAULT_BRAND_MAP = [
     ["instagram.com", "Instagram", "SNS/영상"],
     ["tiktok.com", "TikTok", "SNS/영상"],
 ]
-DEFAULT_BRAND_DF = pd.DataFrame(DEFAULT_BRAND_MAP, columns=["domain", "brand", "category"])
 
+DEFAULT_BRAND_DF = pd.DataFrame(DEFAULT_BRAND_MAP, columns=["domain", "brand", "category"])
 REQUIRED_COLUMNS = ["id", "category", "sub_category", "region", "persona", "question"]
 
+
 def extract_urls(text):
+    """AI 답변 전체에서 http/https URL을 자동 추출하고 중복 제거/정제합니다."""
     if text is None or pd.isna(text):
         return []
+
     urls = re.findall(r'https?://[^\s\)\]\}>"\']+', str(text))
     cleaned = []
+
     for url in urls:
         url = url.rstrip(".,;:!?")
+
+        # OpenAI 내부 이미지 링크 등 분석 대상이 아닌 링크 제외
         if "images.openai.com" in url:
             continue
+
         parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            continue
+
+        # 추적 파라미터/fragment 제거
         normalized = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
         if normalized not in cleaned:
             cleaned.append(normalized)
+
     return cleaned
+
 
 def get_domain(url):
     try:
@@ -63,24 +77,34 @@ def get_domain(url):
     except Exception:
         return ""
 
+
 def lookup_domain(domain, mapping, field):
-    # Exact match first; then allow a subdomain to inherit its parent-domain mapping.
+    # 정확히 일치하는 도메인을 우선 적용
     exact = mapping.loc[mapping["domain"].str.lower() == domain.lower()]
     if not exact.empty:
         return exact.iloc[0][field]
-    candidates = mapping[mapping["domain"].apply(
-        lambda d: domain.lower().endswith("." + str(d).lower())
-    )]
+
+    # 하위 도메인은 부모 도메인의 브랜드/카테고리를 상속
+    candidates = mapping[
+        mapping["domain"].apply(
+            lambda d: domain.lower().endswith("." + str(d).lower())
+        )
+    ]
+
     if not candidates.empty:
-        candidates = candidates.assign(_len=candidates["domain"].str.len()).sort_values("_len", ascending=False)
+        candidates = (
+            candidates.assign(_len=candidates["domain"].str.len())
+            .sort_values("_len", ascending=False)
+        )
         return candidates.iloc[0][field]
+
     return "기타"
 
-def analyze_answer(question_row, answer_text, citation_text, ai_model, mapping):
+
+def analyze_answer(question_row, answer_text, ai_model, mapping):
     rows = []
-    # Prefer manually supplied citation URLs. If none are supplied,
-    # fall back to URLs that happen to exist in the copied AI answer.
-    urls = extract_urls(citation_text) if str(citation_text).strip() else extract_urls(answer_text)
+    urls = extract_urls(answer_text)
+
     for url in urls:
         domain = get_domain(url)
         rows.append({
@@ -97,13 +121,16 @@ def analyze_answer(question_row, answer_text, citation_text, ai_model, mapping):
             "brand": lookup_domain(domain, mapping, "brand"),
             "source_category": lookup_domain(domain, mapping, "category"),
         })
+
     return pd.DataFrame(rows)
+
 
 def to_excel_bytes(df):
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="citation_result")
     return bio.getvalue()
+
 
 if "questions" not in st.session_state:
     st.session_state.questions = None
@@ -112,19 +139,36 @@ if "results" not in st.session_state:
 if "current_idx" not in st.session_state:
     st.session_state.current_idx = 0
 
+
 st.title("AI Citation Analyzer")
-st.caption("AI 답변과 Citation URL을 입력하면 링크를 정제하고, 출처/브랜드 단위의 분석 데이터로 변환합니다.")
+st.caption(
+    "AI 답변 전체를 그대로 붙여넣으면 답변 안의 URL을 자동 추출하고, "
+    "출처/브랜드 단위의 분석 데이터로 변환합니다."
+)
 
 with st.sidebar:
     st.header("1. 분석 설정")
-    ai_model = st.selectbox("AI 모델", ["ChatGPT", "Gemini", "Claude", "Perplexity", "기타"])
+    ai_model = st.selectbox(
+        "AI 모델",
+        ["ChatGPT", "Gemini", "Claude", "Perplexity", "기타"]
+    )
+
     st.divider()
     st.subheader("질문 파일")
-    q_file = st.file_uploader("질문 Excel 업로드", type=["xlsx"], key="questions_file")
+    q_file = st.file_uploader(
+        "질문 Excel 업로드",
+        type=["xlsx"],
+        key="questions_file"
+    )
     st.caption("필수 컬럼: id, category, sub_category, region, persona, question")
 
     st.subheader("브랜드 맵")
-    map_file = st.file_uploader("brand_map.xlsx (선택)", type=["xlsx"], key="map_file")
+    map_file = st.file_uploader(
+        "brand_map.xlsx (선택)",
+        type=["xlsx"],
+        key="map_file"
+    )
+
     if map_file:
         brand_map = pd.read_excel(map_file)
         if not {"domain", "brand", "category"}.issubset(brand_map.columns):
@@ -141,38 +185,52 @@ with st.sidebar:
         use_container_width=True,
     )
 
+
 if q_file:
     questions = pd.read_excel(q_file)
     missing = [c for c in REQUIRED_COLUMNS if c not in questions.columns]
+
     if missing:
         st.error("질문 파일에 다음 컬럼이 없습니다: " + ", ".join(missing))
         st.stop()
-    # 새 파일이 올라오면 세션 질문 갱신
+
+    # 새 질문 파일 업로드 시 세션 초기화
     if st.session_state.questions is None or not questions.equals(st.session_state.questions):
         st.session_state.questions = questions
         st.session_state.current_idx = 0
         st.session_state.results = pd.DataFrame()
 
+
 if st.session_state.questions is None:
     st.info("왼쪽에서 질문 Excel 파일을 업로드하면 분석을 시작할 수 있습니다.")
     st.subheader("MVP가 하는 일")
-    st.write("질문 선택 → AI 답변 붙여넣기 → URL 추출/정제 → 도메인 식별 → 브랜드/출처 분류 → 누적 결과 → Excel 다운로드")
+    st.write(
+        "질문 선택 → AI 답변 전체 붙여넣기 → URL 자동 추출/정제 → "
+        "도메인 식별 → 브랜드/출처 분류 → 누적 결과 → Excel 다운로드"
+    )
     st.stop()
 
+
 questions = st.session_state.questions
-idx = min(st.session_state.current_idx, len(questions)-1)
+idx = min(st.session_state.current_idx, len(questions) - 1)
 q = questions.iloc[idx]
+
 
 top1, top2, top3, top4 = st.columns(4)
 top1.metric("전체 질문", len(questions))
-top2.metric("현재 질문", f"{idx+1}/{len(questions)}")
+top2.metric("현재 질문", f"{idx + 1}/{len(questions)}")
 top3.metric("누적 Citation", len(st.session_state.results))
-done_questions = st.session_state.results["question_id"].nunique() if not st.session_state.results.empty else 0
+done_questions = (
+    st.session_state.results["question_id"].nunique()
+    if not st.session_state.results.empty
+    else 0
+)
 top4.metric("처리 질문", done_questions)
 
 st.progress((idx + 1) / len(questions))
 
 left, right = st.columns([1, 1.35], gap="large")
+
 with left:
     st.subheader("2. 질문")
     st.markdown(f"**ID**  {q['id']}")
@@ -182,68 +240,112 @@ with left:
     st.info(str(q["question"]))
 
     c1, c2 = st.columns(2)
+
     if c1.button("← 이전", disabled=idx == 0, use_container_width=True):
         st.session_state.current_idx -= 1
         st.rerun()
-    if c2.button("다음 →", disabled=idx >= len(questions)-1, use_container_width=True):
+
+    if c2.button(
+        "다음 →",
+        disabled=idx >= len(questions) - 1,
+        use_container_width=True,
+    ):
         st.session_state.current_idx += 1
         st.rerun()
+
 
 with right:
     st.subheader("3. AI 답변")
     answer = st.text_area(
         "AI의 답변 전체를 그대로 붙여넣으세요.",
-        height=300,
-        placeholder="여기에 ChatGPT / Gemini / Claude 등의 답변을 붙여넣으세요...",
+        height=470,
+        placeholder=(
+            "여기에 ChatGPT / Gemini / Claude 등의 답변 전체를 붙여넣으세요.\n\n"
+            "답변 안에 https://... 형태의 URL이 포함되어 있으면 자동으로 추출합니다."
+        ),
         key=f"answer_{q['id']}_{idx}",
     )
 
-    citation_text = st.text_area(
-        "Citation URL",
-        height=150,
-        placeholder="인용 링크를 한 줄에 하나씩 붙여넣으세요. 여러 개를 한 번에 붙여넣어도 됩니다.\n예: https://www.booking.com/...\nhttps://www.tripadvisor.com/...",
-        key=f"citations_{q['id']}_{idx}",
-        help="ChatGPT 답변 복사 시 Citation 링크가 빠질 수 있어 별도 입력칸을 추가했습니다."
-    )
-
-    if st.button("Citation 분석 및 저장", type="primary", use_container_width=True):
-        if not answer.strip() and not citation_text.strip():
-            st.warning("AI 답변 또는 Citation URL을 입력해 주세요.")
+    if answer.strip():
+        preview_urls = extract_urls(answer)
+        if preview_urls:
+            with st.expander(f"감지된 URL 미리보기 ({len(preview_urls)}개)", expanded=False):
+                for i, url in enumerate(preview_urls, 1):
+                    st.write(f"{i}. {url}")
         else:
-            result = analyze_answer(q, answer, citation_text, ai_model, brand_map)
+            st.caption("현재 붙여넣은 답변에서는 http/https 형식의 URL이 감지되지 않았습니다.")
+
+    if st.button("Citation 자동 분석 및 저장", type="primary", use_container_width=True):
+        if not answer.strip():
+            st.warning("AI 답변을 입력해 주세요.")
+        else:
+            result = analyze_answer(q, answer, ai_model, brand_map)
+
             if result.empty:
-                st.warning("http/https 형식의 Citation URL을 찾지 못했습니다.")
+                st.warning(
+                    "답변에서 http/https 형식의 Citation URL을 찾지 못했습니다. "
+                    "복사한 답변에 실제 URL 문자열이 포함되어 있는지 확인해 주세요."
+                )
             else:
-                # 같은 질문+모델의 기존 결과는 교체하여 중복 누적 방지
+                # 같은 질문 + 같은 AI 모델의 기존 결과는 교체하여 중복 누적 방지
                 old = st.session_state.results
+
                 if not old.empty:
-                    old = old[~((old["question_id"] == q["id"]) & (old["ai_model"] == ai_model))]
-                st.session_state.results = pd.concat([old, result], ignore_index=True)
-                st.success(f"{len(result)}개의 Citation을 추출해 저장했습니다.")
+                    old = old[
+                        ~(
+                            (old["question_id"] == q["id"])
+                            & (old["ai_model"] == ai_model)
+                        )
+                    ]
+
+                st.session_state.results = pd.concat(
+                    [old, result],
+                    ignore_index=True,
+                )
+
+                st.success(f"{len(result)}개의 Citation을 자동 추출해 저장했습니다.")
+
 
 st.divider()
 st.subheader("4. 분석 Dashboard")
 
 res = st.session_state.results
+
 if res.empty:
     st.caption("Citation을 하나 이상 분석하면 Dashboard가 표시됩니다.")
 else:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Citation", f"{len(res):,}")
     m2.metric("Unique Domain", f"{res['domain'].nunique():,}")
-    m3.metric("Brand", f"{res.loc[res['brand'] != '기타', 'brand'].nunique():,}")
-    other_rate = (res["brand"].eq("기타").mean() * 100)
+    m3.metric(
+        "Brand",
+        f"{res.loc[res['brand'] != '기타', 'brand'].nunique():,}",
+    )
+    other_rate = res["brand"].eq("기타").mean() * 100
     m4.metric("미분류 비중", f"{other_rate:.1f}%")
 
     tab1, tab2, tab3 = st.tabs(["브랜드", "출처 유형", "Raw Data"])
+
     with tab1:
-        brand_counts = res["brand"].value_counts().rename_axis("brand").reset_index(name="citations")
+        brand_counts = (
+            res["brand"]
+            .value_counts()
+            .rename_axis("brand")
+            .reset_index(name="citations")
+        )
         st.bar_chart(brand_counts.set_index("brand"))
         st.dataframe(brand_counts, use_container_width=True, hide_index=True)
+
     with tab2:
-        cat_counts = res["source_category"].value_counts().rename_axis("source_category").reset_index(name="citations")
+        cat_counts = (
+            res["source_category"]
+            .value_counts()
+            .rename_axis("source_category")
+            .reset_index(name="citations")
+        )
         st.bar_chart(cat_counts.set_index("source_category"))
         st.dataframe(cat_counts, use_container_width=True, hide_index=True)
+
     with tab3:
         st.dataframe(res, use_container_width=True, hide_index=True)
 
