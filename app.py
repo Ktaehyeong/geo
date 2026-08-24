@@ -22,6 +22,7 @@ DEFAULT_BRAND_MAP = [
     ["verygoodtour.com", "참좋은여행", "여행사"],
     ["yellowballoon.co.kr", "노랑풍선", "여행사"],
     ["kyowontour.com", "교원투어", "여행사"],
+    ["lottetour.com", "롯데관광", "여행사"],
     ["nol.interpark.com", "인터파크투어", "여행사"],
     ["travel.interpark.com", "인터파크투어", "여행사"],
     ["nol.yanolja.com", "야놀자", "OTA"],
