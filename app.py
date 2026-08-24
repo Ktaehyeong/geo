@@ -1,6 +1,10 @@
-
 import io
 import re
+import json
+import hashlib
+import sqlite3
+from datetime import datetime
+from pathlib import Path
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
@@ -385,6 +389,151 @@ def rich_paste_box(key):
     return plain_text, html_text
 
 
+
+# -----------------------------
+# 자동 저장 / 복구
+# -----------------------------
+# Streamlit 세션 상태가 초기화되어도 일반적인 브라우저 종료/재접속,
+# Clear caches 등에 대비해 로컬 SQLite 체크포인트에 저장한다.
+#
+# 주의: Streamlit Community Cloud에서 앱이 재배포되거나 컨테이너 자체가
+# 새로 만들어지면 이 파일도 사라질 수 있다. 장기 영구보관은 외부 DB가 필요하다.
+DB_PATH = Path(__file__).with_name("citation_checkpoint.sqlite3")
+
+
+def _connect_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            dataset_id TEXT PRIMARY KEY,
+            questions_json TEXT NOT NULL,
+            results_json TEXT NOT NULL,
+            current_idx INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def dataframe_fingerprint(df):
+    """질문셋 내용을 기준으로 같은 파일인지 판별할 ID를 만든다."""
+    normalized = df.copy()
+    normalized = normalized.fillna("").astype(str)
+    payload = normalized.to_csv(index=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:20]
+
+
+def _df_to_json(df):
+    return df.to_json(orient="records", force_ascii=False)
+
+
+def _json_to_df(text):
+    if not text:
+        return pd.DataFrame()
+    try:
+        data = json.loads(text)
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
+
+def save_checkpoint(dataset_id, questions, results, current_idx):
+    if not dataset_id or questions is None:
+        return
+
+    try:
+        conn = _connect_db()
+        conn.execute(
+            """
+            INSERT INTO checkpoints
+                (dataset_id, questions_json, results_json, current_idx, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(dataset_id) DO UPDATE SET
+                questions_json = excluded.questions_json,
+                results_json = excluded.results_json,
+                current_idx = excluded.current_idx,
+                updated_at = excluded.updated_at
+            """,
+            (
+                dataset_id,
+                _df_to_json(questions),
+                _df_to_json(results if results is not None else pd.DataFrame()),
+                int(current_idx),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO app_meta(key, value)
+            VALUES ('active_dataset_id', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (dataset_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.warning(f"자동 저장 중 오류가 발생했습니다: {e}")
+
+
+def load_checkpoint(dataset_id=None):
+    try:
+        conn = _connect_db()
+
+        if dataset_id is None:
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key='active_dataset_id'"
+            ).fetchone()
+            if not row:
+                conn.close()
+                return None
+            dataset_id = row[0]
+
+        row = conn.execute(
+            """
+            SELECT dataset_id, questions_json, results_json, current_idx, updated_at
+            FROM checkpoints
+            WHERE dataset_id = ?
+            """,
+            (dataset_id,),
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return {
+            "dataset_id": row[0],
+            "questions": _json_to_df(row[1]),
+            "results": _json_to_df(row[2]),
+            "current_idx": int(row[3] or 0),
+            "updated_at": row[4],
+        }
+    except Exception:
+        return None
+
+
+def reset_checkpoint_results(dataset_id, questions):
+    """질문셋은 유지하고 수집 결과/진행 위치만 초기화한다."""
+    save_checkpoint(
+        dataset_id,
+        questions,
+        pd.DataFrame(),
+        0,
+    )
+
+
 # -----------------------------
 # Session state
 # -----------------------------
@@ -394,6 +543,24 @@ if "results" not in st.session_state:
     st.session_state.results = pd.DataFrame()
 if "current_idx" not in st.session_state:
     st.session_state.current_idx = 0
+if "active_dataset_id" not in st.session_state:
+    st.session_state.active_dataset_id = None
+if "checkpoint_restored" not in st.session_state:
+    st.session_state.checkpoint_restored = False
+if "checkpoint_updated_at" not in st.session_state:
+    st.session_state.checkpoint_updated_at = None
+
+# 새 브라우저 세션에서도 마지막 체크포인트 자동 복구
+if not st.session_state.checkpoint_restored:
+    restored = load_checkpoint()
+    if restored and not restored["questions"].empty:
+        st.session_state.questions = restored["questions"]
+        st.session_state.results = restored["results"]
+        st.session_state.current_idx = restored["current_idx"]
+        st.session_state.active_dataset_id = restored["dataset_id"]
+        st.session_state.checkpoint_updated_at = restored["updated_at"]
+
+    st.session_state.checkpoint_restored = True
 
 
 # -----------------------------
@@ -401,7 +568,7 @@ if "current_idx" not in st.session_state:
 # -----------------------------
 st.title("AI Citation Analyzer")
 st.caption(
-    "AI 답변 전체를 한 번 붙여넣으면, 일반 텍스트뿐 아니라 클립보드 HTML의 숨은 하이퍼링크까지 읽어 Citation을 자동 추출합니다."
+    "Citation 결과와 현재 질문 위치를 자동 저장합니다. 창을 닫았다 다시 열어도 마지막 체크포인트를 우선 복구합니다."
 )
 
 with st.sidebar:
@@ -419,6 +586,15 @@ with st.sidebar:
         key="questions_file",
     )
     st.caption("필수 컬럼: id, category, sub_category, region, persona, question")
+
+    if st.session_state.questions is not None:
+        if st.session_state.checkpoint_updated_at:
+            st.success(
+                "자동 저장본 사용 중 · 마지막 저장 "
+                + str(st.session_state.checkpoint_updated_at).replace("T", " ")
+            )
+        else:
+            st.caption("완료한 Citation은 자동 저장됩니다.")
 
     st.subheader("브랜드 맵")
     map_file = st.file_uploader(
@@ -445,20 +621,42 @@ with st.sidebar:
 
 
 if q_file:
-    questions = pd.read_excel(q_file)
-    missing = [c for c in REQUIRED_COLUMNS if c not in questions.columns]
+    uploaded_questions = pd.read_excel(q_file)
+    missing = [c for c in REQUIRED_COLUMNS if c not in uploaded_questions.columns]
 
     if missing:
         st.error("질문 파일에 다음 컬럼이 없습니다: " + ", ".join(missing))
         st.stop()
 
-    if (
-        st.session_state.questions is None
-        or not questions.equals(st.session_state.questions)
-    ):
-        st.session_state.questions = questions
-        st.session_state.current_idx = 0
-        st.session_state.results = pd.DataFrame()
+    uploaded_dataset_id = dataframe_fingerprint(uploaded_questions)
+
+    # 다른 질문셋을 올렸을 때: 과거 저장본이 있으면 이어서, 없으면 새로 시작
+    if uploaded_dataset_id != st.session_state.active_dataset_id:
+        saved = load_checkpoint(uploaded_dataset_id)
+
+        if saved and not saved["questions"].empty:
+            st.session_state.questions = saved["questions"]
+            st.session_state.results = saved["results"]
+            st.session_state.current_idx = saved["current_idx"]
+            st.session_state.checkpoint_updated_at = saved["updated_at"]
+            st.toast("이 질문셋의 이전 진행 상태를 복구했습니다.")
+        else:
+            st.session_state.questions = uploaded_questions
+            st.session_state.results = pd.DataFrame()
+            st.session_state.current_idx = 0
+            st.session_state.checkpoint_updated_at = None
+
+        st.session_state.active_dataset_id = uploaded_dataset_id
+
+        save_checkpoint(
+            uploaded_dataset_id,
+            st.session_state.questions,
+            st.session_state.results,
+            st.session_state.current_idx,
+        )
+    else:
+        # 같은 질문셋이면 업로드 파일의 최신 내용을 유지
+        st.session_state.questions = uploaded_questions
 
 
 if st.session_state.questions is None:
@@ -507,6 +705,12 @@ with left:
         use_container_width=True,
     ):
         st.session_state.current_idx -= 1
+        save_checkpoint(
+            st.session_state.active_dataset_id,
+            st.session_state.questions,
+            st.session_state.results,
+            st.session_state.current_idx,
+        )
         st.rerun()
 
     if c2.button(
@@ -515,6 +719,12 @@ with left:
         use_container_width=True,
     ):
         st.session_state.current_idx += 1
+        save_checkpoint(
+            st.session_state.active_dataset_id,
+            st.session_state.questions,
+            st.session_state.results,
+            st.session_state.current_idx,
+        )
         st.rerun()
 
 
@@ -583,8 +793,16 @@ with right:
                 ignore_index=True,
             )
 
+            save_checkpoint(
+                st.session_state.active_dataset_id,
+                st.session_state.questions,
+                st.session_state.results,
+                st.session_state.current_idx,
+            )
+            st.session_state.checkpoint_updated_at = datetime.now().isoformat(timespec="seconds")
+
             st.success(
-                f"{len(result)}개의 Citation을 자동 추출해 저장했습니다."
+                f"{len(result)}개의 Citation을 자동 추출해 저장했습니다. · 자동 저장 완료"
             )
 
 
@@ -654,6 +872,26 @@ else:
         type="primary",
     )
 
-    if st.button("현재 세션 결과 초기화"):
-        st.session_state.results = pd.DataFrame()
-        st.rerun()
+    with st.expander("⚠️ 데이터 초기화"):
+        st.caption(
+            "질문셋은 유지하고 Citation 결과와 진행 위치만 초기화합니다. "
+            "이 작업은 자동 저장본에도 즉시 반영됩니다."
+        )
+        confirm_reset = st.checkbox(
+            "정말 초기화하겠습니다.",
+            key="confirm_reset_checkpoint",
+        )
+
+        if st.button(
+            "Citation 결과 전체 초기화",
+            disabled=not confirm_reset,
+            type="secondary",
+        ):
+            st.session_state.results = pd.DataFrame()
+            st.session_state.current_idx = 0
+            reset_checkpoint_results(
+                st.session_state.active_dataset_id,
+                st.session_state.questions,
+            )
+            st.session_state.checkpoint_updated_at = datetime.now().isoformat(timespec="seconds")
+            st.rerun()
