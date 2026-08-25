@@ -25,6 +25,8 @@ DEFAULT_BRAND_MAP = [
     ["nol.interpark.com", "인터파크투어", "여행사"],
     ["kr.trip.com", "트립닷컴", "여행사"],
     ["nol.yanolja.com", "야놀자", "OTA"],
+    ["hotelscombined.co.kr", "호텔스컴바", "OTA"],
+    ["kayak.com", "카약", "OTA"],
     ["yeogi.com", "여기어때", "OTA"],
     ["tripstore.kr", "트립스토", "OTA"],
     ["myrealtrip.com", "마이리얼트", "OTA"],
