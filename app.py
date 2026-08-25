@@ -22,18 +22,13 @@ DEFAULT_BRAND_MAP = [
     ["verygoodtour.com", "참좋은여행", "여행사"],
     ["yellowballoon.co.kr", "노랑풍선", "여행사"],
     ["kyowontour.com", "교원투어", "여행사"],
-    ["lottetour.com", "롯데관광", "여행사"],
     ["nol.interpark.com", "인터파크투어", "여행사"],
-    ["travel.interpark.com", "인터파크투어", "여행사"],
     ["nol.yanolja.com", "야놀자", "OTA"],
     ["yeogi.com", "여기어때", "OTA"],
     ["booking.com", "Booking.com", "OTA"],
-    ["myrealtrip.com", "마이리얼트립", "OTA"],
     ["agoda.com", "Agoda", "OTA"],
     ["expedia.com", "Expedia", "OTA"],
     ["tripadvisor.com", "Tripadvisor", "OTA/리뷰플랫폼"],
-    ["tripstore.kr", "트립스토어", "OTA"],
-    ["yomo.co.kr", "요모", "OTA"],
     ["klook.com", "Klook", "OTA"],
     ["kkday.com", "KKday", "OTA"],
     ["japan.travel", "JNTO", "관광청/공공기관"],
@@ -540,6 +535,56 @@ def reset_checkpoint_results(dataset_id, questions):
 
 
 # -----------------------------
+# 결과 Excel 복구
+# -----------------------------
+RESULT_REQUIRED_COLUMNS = [
+    "question_id", "category", "sub_category", "region", "persona", "question",
+    "ai_model", "answer", "url", "domain", "brand", "source_category"
+]
+
+
+def normalize_question_id(value):
+    """Excel에서 숫자 ID가 1.0처럼 읽혀도 질문 파일의 1과 동일하게 비교한다."""
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def restore_from_result_excel(result_df, questions_df):
+    """이전 citation_result.xlsx를 검증하고 다음 미처리 질문 인덱스를 계산한다."""
+    missing = [c for c in RESULT_REQUIRED_COLUMNS if c not in result_df.columns]
+    if missing:
+        raise ValueError("복구 파일에 필요한 컬럼이 없습니다: " + ", ".join(missing))
+
+    restored = result_df.copy()
+    restored = restored.dropna(how="all").reset_index(drop=True)
+
+    # 질문 파일과 전혀 다른 결과 파일을 잘못 올리는 실수를 방지
+    question_ids = {normalize_question_id(v) for v in questions_df["id"].tolist()}
+    result_ids = {normalize_question_id(v) for v in restored["question_id"].tolist()}
+    unknown_ids = sorted(v for v in result_ids if v and v not in question_ids)
+    if unknown_ids:
+        preview = ", ".join(unknown_ids[:5])
+        suffix = " ..." if len(unknown_ids) > 5 else ""
+        raise ValueError(
+            f"현재 질문 파일에 없는 question_id가 복구 파일에 있습니다: {preview}{suffix}"
+        )
+
+    done_ids = {normalize_question_id(v) for v in restored["question_id"].tolist()}
+    next_idx = 0
+    for i, qid in enumerate(questions_df["id"].tolist()):
+        if normalize_question_id(qid) not in done_ids:
+            next_idx = i
+            break
+    else:
+        next_idx = max(len(questions_df) - 1, 0)
+
+    return restored, next_idx, len(done_ids)
+
+
+# -----------------------------
 # Session state
 # -----------------------------
 if "questions" not in st.session_state:
@@ -571,20 +616,18 @@ if not st.session_state.checkpoint_restored:
 # -----------------------------
 # UI
 # -----------------------------
-st.title("AI 인용 형태 파악을 위해 제작한 페이지")
+st.title("AI Citation Analyzer")
 
 st.markdown("""
-**본 페이지는 생성형 AI의 답변에서 인용된 출처(Citation)를 수집하고 분석하기 위한 도구입니다.**  
-사전에 등록된 질문을 ChatGPT 등 생성형 AI에 입력한 뒤, AI의 답변과 Citation URL을 수집하여 출처 도메인·브랜드·유형별 인용 현황을 확인할 수 있습니다. 수집된 결과는 질문별로 누적됩니다.  
-최종 데이터는 Excel로 다운로드하여 어떤 브랜드와 정보가 주로 인용되는지 분석하는 데 활용합니다. 빈도 높게 인용하는 콘텐츠/페이지의 유사성을 바탕으로 그에 맞춰 콘텐츠를 제작하는 것을 목적으로 합니다.
+**AI Citation Analyzer는 생성형 AI의 답변에서 인용된 출처(Citation)를 수집하고 분석하기 위한 도구입니다.**  
+사전에 등록된 질문을 ChatGPT 등 생성형 AI에 입력한 뒤, AI의 답변과 Citation URL을 수집하여 출처 도메인·브랜드·유형별 인용 현황을 확인할 수 있습니다. 수집된 결과는 질문별로 누적되며, 최종 데이터는 Excel 형태로 다운로드하여 AI 답변에서 어떤 브랜드와 정보 출처가 주로 인용되는지 분석하는 데 활용할 수 있습니다.
 
-**사용 방법:** 질문 확인 → 생성형 AI에 질문 입력 → 답변 및 Citation 복사 → 본 페이지에 붙여넣기 → Citation 분석 및 저장 → 전체 질문 완료 후 Excel 다운로드 → 유사성 검토
-
-**질문 생성:** 질문은 리스닝마인드의 CEP파인더 기준으로, 해외여행/가족여행/패키지여행/여름휴가라는 키워드 기준의 예상 질문을 사용
+**사용 방법:** 질문 확인 → 생성형 AI에 질문 입력 → 답변 및 Citation 복사 → 본 페이지에 붙여넣기 → Citation 분석 및 저장 → 전체 질문 완료 후 Excel 다운로드
 """)
 
 st.caption(
-    "※ Citation 결과와 현재 질문 위치는 자동 저장됩니다. 창을 닫았다 다시 열어도 마지막 체크포인트를 우선 복구합니다."
+    "※ 로컬 자동 저장은 보조 기능입니다. Streamlit 서버가 재시작되면 사라질 수 있으므로, "
+    "중간중간 결과 Excel을 다운로드해 두세요. 저장해 둔 citation_result.xlsx를 다시 업로드하면 이어서 작업할 수 있습니다."
 )
 
 with st.sidebar:
@@ -602,6 +645,15 @@ with st.sidebar:
         key="questions_file",
     )
     st.caption("필수 컬럼: id, category, sub_category, region, persona, question")
+
+    st.subheader("중간 결과 복구")
+    result_file = st.file_uploader(
+        "citation_result.xlsx 업로드 (선택)",
+        type=["xlsx"],
+        key="result_file",
+        help="이전에 다운로드한 분석 결과 Excel을 올리면 완료한 질문을 복구하고 다음 미처리 질문부터 이어서 시작합니다.",
+    )
+    st.caption("권장: 작업 중간중간 분석 결과 Excel을 내려받아 백업해 두세요.")
 
     if st.session_state.questions is not None:
         if st.session_state.checkpoint_updated_at:
@@ -673,6 +725,41 @@ if q_file:
     else:
         # 같은 질문셋이면 업로드 파일의 최신 내용을 유지
         st.session_state.questions = uploaded_questions
+
+    # 사용자가 백업 결과 Excel을 올린 경우, 로컬 체크포인트보다 이 파일을 우선 적용
+    if result_file is not None:
+        restore_token = (
+            getattr(result_file, "name", "citation_result.xlsx"),
+            getattr(result_file, "size", None),
+            uploaded_dataset_id,
+        )
+        if st.session_state.get("last_result_restore_token") != restore_token:
+            try:
+                uploaded_results = pd.read_excel(result_file)
+                restored_results, resume_idx, restored_questions = restore_from_result_excel(
+                    uploaded_results,
+                    uploaded_questions,
+                )
+                st.session_state.results = restored_results
+                st.session_state.current_idx = resume_idx
+                st.session_state.active_dataset_id = uploaded_dataset_id
+                st.session_state.checkpoint_updated_at = datetime.now().isoformat(timespec="seconds")
+                st.session_state.last_result_restore_token = restore_token
+
+                # 이번 세션의 로컬 체크포인트에도 즉시 반영
+                save_checkpoint(
+                    uploaded_dataset_id,
+                    st.session_state.questions,
+                    st.session_state.results,
+                    st.session_state.current_idx,
+                )
+                st.success(
+                    f"백업 결과를 복구했습니다. 처리 질문 {restored_questions}개 · "
+                    f"Citation {len(restored_results)}개 · {resume_idx + 1}번 질문부터 이어갑니다."
+                )
+            except Exception as e:
+                st.error(f"중간 결과 복구에 실패했습니다: {e}")
+                st.stop()
 
 
 if st.session_state.questions is None:
@@ -880,8 +967,10 @@ else:
             hide_index=True,
         )
 
+    st.caption("💾 이 파일이 영구 백업본입니다. 일정 구간마다 다운로드해 두면 서버가 초기화되어도 그대로 이어갈 수 있습니다.")
+
     st.download_button(
-        "분석 결과 Excel 다운로드",
+        "분석 결과 Excel 다운로드 · 백업",
         data=to_excel_bytes(res),
         file_name="citation_result.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
