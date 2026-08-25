@@ -33,6 +33,8 @@ DEFAULT_BRAND_MAP = [
     ["agoda.com", "Agoda", "OTA"],
     ["expedia.com", "Expedia", "OTA"],
     ["tripadvisor.com", "Tripadvisor", "OTA/리뷰플랫폼"],
+    ["gotokyo.org", "일본도시정보(Go)", "관광청/공공기관"],
+    ["gofukuoka.jp", "일본도시정보(Go)", "관광청/공공기관"],
     ["klook.com", "Klook", "OTA"],
     ["kkday.com", "KKday", "OTA"],
     ["japan.travel", "일본관광청", "관광청/공공기관"],
