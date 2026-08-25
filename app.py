@@ -32,6 +32,7 @@ DEFAULT_BRAND_MAP = [
     ["klook.com", "Klook", "OTA"],
     ["kkday.com", "KKday", "OTA"],
     ["japan.travel", "JNTO", "관광청/공공기관"],
+    ["tourismthailand.org", "TAT", "관광청/공공기관"],
     ["visitkorea.or.kr", "한국관광공사", "관광청/공공기관"],
     ["blog.naver.com", "네이버 블로그", "블로그/콘텐츠"],
     ["post.naver.com", "네이버 포스트", "블로그/콘텐츠"],
